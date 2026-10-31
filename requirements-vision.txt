@@ -1,0 +1,6 @@
+# OPTIONAL: needed for AI sky classification and labeled-photo training.
+# A real pretrained model is downloaded from Hugging Face on first use.
+# Expect significant disk space and CPU RAM usage on Windows.
+torch>=2.2,<3
+transformers>=4.44,<5
+safetensors>=0.4

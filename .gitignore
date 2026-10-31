@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.streamlit/secrets.toml
+.DS_Store
+
+# Private uploads, API keys, large downloaded weights, photos and custom trained assets
+sky_photos/
+sky_prototypes.npz
+*.env
+.env*
+data_private/
+*.pt
+*.pth
