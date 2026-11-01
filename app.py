@@ -1,4 +1,4 @@
-"""AIRFECTION: premium Streamlit frontend for the transparent PM2.5 hackathon prototype."""
+"""AIRFECTION: environmental forecasting student research website."""
 from __future__ import annotations
 
 from html import escape
@@ -18,18 +18,14 @@ from data_lab import (validate_pollution_csv, full_training_csv, fetch_weather_f
                       find_pm25_sensors, download_pm25_hours, REQUIRED)
 from health_evidence import guidance, reference_for, SOURCES, pm25_24h_mean, WHO_GUIDELINE
 from forecasting import HORIZONS, forecast, train_model
-from station_archive import download_cpcb_festival, festival_evening_stats, PUBLIC_2024_KEY
-from festival import (DIWALI_BY_YEAR, OFFSETS, historical_archive, provider_future,
-                      from_uploaded_history, synthetic_archive, build_outlook,
-                      daily_stats, phase_summary, phase_name)
-from heatmap import color_for_value, demo_grid, interpolate_surface
+from heatmap import color_for_value, demo_grid, smooth_raster_overlay
 from sample_data import CITIES, demo_city, fake_future_weather
 
-st.set_page_config(page_title="AIRFECTION | Predict the smog before the sparkle", page_icon="🌬️", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="AIRFECTION | Air quality forecasts", page_icon="🌬️", layout="wide", initial_sidebar_state="expanded")
 st.markdown(f"<style>{(Path(__file__).parent / 'ui.css').read_text(encoding='utf-8')}</style>", unsafe_allow_html=True)
 
-ROUTES = ["◈  Dashboard", "🪔  Diwali Forecast", "◎  Forecast Heatmap", "↗  Spike Radar", "♡  Health Shield", "▧  Sky Photo AI", "▤  Data Lab", "⚙  Model & Evidence"]
-PALETTE = {"bg": "#111724", "grid": "rgba(199,214,230,.08)", "pink": "#fa90ad", "mint": "#92edc5", "amber": "#fac17f", "text": "#e9f0f9"}
+ROUTES = ["Next 6 hours", "Diwali 2026 forecast", "Pollution map", "Pollution alerts", "Health information", "Sky photo check", "Data sources", "Model information"]
+PALETTE = {"grid": "#e7ecf0"}
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -52,44 +48,27 @@ def load_spatial_grid(lat, lon, time_string):
     return get_spatial_forecast_grid(lat, lon, pd.Timestamp(time_string))
 
 
-@st.cache_data(ttl=60 * 60 * 8, show_spinner=False)
-def festival_historical(lat: float, lon: float, year: int):
-    return historical_archive(lat, lon, year)
-
-
-@st.cache_data(ttl=60 * 30, show_spinner=False)
-def festival_future(lat: float, lon: float):
-    return provider_future(lat, lon)
-
-
-@st.cache_data(ttl=60 * 60 * 8, show_spinner=False)
-def festival_stations(city: str, year: int, key: str):
-    return download_cpcb_festival(city, year, DIWALI_BY_YEAR[year], key)
-
-
 @st.cache_resource(show_spinner=False)
 def fitted(dataframe):
     return train_model(dataframe)
 
 
 def label_section(kicker, title, subtitle="", right=""):
-    st.markdown(
-        f'<div class="section-top"><div><div class="kicker">{escape(kicker)}</div>'
-        f'<div class="section-title">{escape(title)}</div></div>'
-        f'{f"<span class=\"tag\">{escape(right)}</span>" if right else ""}</div>'
-        f'{f"<p class=\"section-sub\">{escape(subtitle)}</p>" if subtitle else ""}',
-        unsafe_allow_html=True,
-    )
+    st.subheader(title)
+    if subtitle:
+        st.caption(subtitle)
 
 
 def panel(title, description, kind=""):
-    st.markdown(f'<div class="panel {kind}"><h3>{escape(title)}</h3><p>{escape(description)}</p></div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        st.markdown(f"**{title}**")
+        st.write(description)
 
 
 def plot_style(fig, height=335):
     fig.update_layout(
         height=height, margin=dict(l=6, r=12, t=16, b=10),
-        paper_bgcolor="#151c2b", plot_bgcolor="#151c2b", font=dict(color="#aab6c9", size=11),
+        paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font=dict(color="#354c5c", size=12),
         hovermode="x unified", showlegend=True,
         legend=dict(orientation="h", y=1.13, x=0, font=dict(size=11)),
         xaxis=dict(gridcolor=PALETTE["grid"], showline=False, zeroline=False),
@@ -107,11 +86,10 @@ def line_chart(latest, predictions, selected_hour):
     picked = predictions.loc[predictions["horizon"] == selected_hour].iloc[0]
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=line["time"], y=line["pm2_5"], name="ML forecast",
-                             mode="lines+markers", line=dict(color="#fa92ad", width=3, shape="spline"),
-                             marker=dict(size=7, color="#ffa6bf"),
-                             fill="tozeroy", fillcolor="rgba(248,113,151,.065)"))
+                             mode="lines+markers", line=dict(color="#285e83", width=2),
+                             marker=dict(size=6, color="#285e83")))
     fig.add_trace(go.Scatter(x=[pd.Timestamp(picked["time"])], y=[picked["pm2_5"]], name=f"Selected +{selected_hour}h",
-                             mode="markers", marker=dict(size=15, color="#a0f3d1", line=dict(color="#132129", width=3)),
+                             mode="markers", marker=dict(size=10, color="#ac4b34", line=dict(color="#ffffff", width=2)),
                              hovertemplate="Selected forecast: %{y:.1f} µg/m³<extra></extra>"))
     fig.add_trace(go.Scatter(x=line["time"], y=[float(latest["pm2_5"])] * len(line), name="Current reference",
                              mode="lines", line=dict(color="#79889c", dash="dot", width=1.5), opacity=.8))
@@ -134,47 +112,44 @@ def map_rows(city, coords, is_demo, target_time, selected_hour, predicted):
     return load_spatial_grid(coords[0], coords[1], str(target_time))
 
 
-def render_map(rows, chosen, center, metric="pm2_5", steps=34):
-    """Interpolated regional forecast surface; no fake glow, no ungrounded points."""
-    if isinstance(rows, list):
-        frame = pd.DataFrame(rows)
-    else:
-        frame = rows.copy()
-    if frame.empty:
-        st.warning("No geographical forecast points found for this time.")
+def render_map(rows, chosen, center, metric="pm2_5"):
+    """Smooth, softly faded real-value forecast surface; light street basemap."""
+    frame = pd.DataFrame(rows).copy() if isinstance(rows, list) else rows.copy()
+    if frame.empty or not {"lat", "lon", metric}.issubset(frame.columns):
+        st.warning("No geographical forecast locations are available for this hour.")
         return
     frame = frame.dropna(subset=["lat", "lon", metric]).copy()
     if frame.empty:
-        st.warning("No valid data for the selected map variable.")
+        st.warning("The chosen map measurement isn't available for this hour.")
         return
-    frame["fill"] = frame[metric].map(lambda val: color_for_value(val, metric, 245))
-    layer_list = []
-    surface = interpolate_surface(frame, metric, steps=steps)
-    if not surface.empty:
-        layer_list.append(pdk.Layer("PolygonLayer", data=surface, id="forecast_surface",
-                                    get_polygon="polygon", get_fill_color="fill",
-                                    filled=True, stroked=False, pickable=True,
-                                    auto_highlight=False, extruded=False))
-    # Actual forecast sampling points displayed as small dots, not huge blobs.
-    layer_list.append(pdk.Layer("ScatterplotLayer", data=frame,
-                                id="forecast_nodes", get_position="[lon, lat]",
-                                get_fill_color=[247, 248, 252, 230],
-                                get_radius=1750, radius_min_pixels=2, radius_max_pixels=5,
-                                stroked=True, get_line_color=[22, 30, 40, 245],
-                                line_width_min_pixels=1, pickable=True))
-    view = pdk.ViewState(latitude=float(center[0]),longitude=float(center[1]),
-                         zoom=7.2 if len(frame)>2 else 9.4, pitch=0)
-    unit = "US AQI" if metric == "us_aqi" else "PM2.5 µg/m³"
-    deck = pdk.Deck(map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-                    initial_view_state=view,layers=layer_list,
-                    tooltip={"html": f"<b>{unit}</b><br>Interpolated estimate: {{value}}<br>Colored area is not a sensor measurement",
-                             "style": {"backgroundColor": "#141e2e", "color":"#f5f4f8", "borderRadius":"12px"}})
-    st.pydeck_chart(deck, use_container_width=True)
-    if surface.empty:
-        st.warning("Too few geographically distinct forecast grid cells were available. A continuous heatmap cannot be estimated reliably, so only supplied locations are shown.")
+    frame["display_value"] = frame[metric].round(1)
+    layers = []
+    surface = smooth_raster_overlay(frame, metric)
+    if surface is not None:
+        layers.append(pdk.Layer("BitmapLayer", id="smooth_pollution_surface",
+                                image=surface["image"], bounds=surface["bounds"],
+                                opacity=0.85, pickable=False))
+    # Sampling locations, drawn small enough that they don't obscure the map.
+    layers.append(pdk.Layer("ScatterplotLayer", id="forecast_sample_points",
+                            data=frame, get_position="[lon, lat]",
+                            get_fill_color=[28, 72, 100, 195],
+                            get_radius=1250, radius_min_pixels=2,
+                            radius_max_pixels=4, stroked=True,
+                            get_line_color=[255,255,255,245],
+                            line_width_min_pixels=1, pickable=True))
+    view = pdk.ViewState(latitude=float(center[0]), longitude=float(center[1]),
+                         zoom=7.2 if len(frame) > 2 else 9.4, pitch=0)
+    unit = "US AQI" if metric == "us_aqi" else "PM2.5 (µg/m³)"
+    deck = pdk.Deck(map_style="https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+                    initial_view_state=view, layers=layers,
+                    tooltip={"html": "<b>Forecast sample</b><br>Value: {display_value}<br>"+unit,
+                             "style": {"backgroundColor":"#ffffff", "color":"#273845"}})
+    st.pydeck_chart(deck, use_container_width=True, height=475)
+    if surface is None:
+        st.warning("Not enough distinct regional grid cells to draw a reliable continuous layer. Only supplied points are shown.")
     else:
-        st.caption(f"Colored surface interpolated from {len(frame)} distinct regional forecast cells. A smoother display does NOT imply higher data resolution or neighborhood-level accuracy.")
-    return len(surface)
+        st.caption(f"Smooth map display from {surface['samples']} regional forecast samples. The colour layer fades outside data coverage; it does not add new observations or improve spatial resolution.")
+    return len(frame)
 
 
 def render_legend(metric):
@@ -190,36 +165,50 @@ def render_legend(metric):
 
 
 
+# Diwali is the main project goal, so new visitors start there.
+if st.session_state.get("nav_route") not in ROUTES:
+    st.session_state["nav_route"] = ROUTES[1]
+
 with st.sidebar:
-    st.markdown('<div class="brandline"><span class="brandmark">✺</span><span class="brand">AIRFECTION</span></div>', unsafe_allow_html=True)
-    st.caption("THE FUTURE OF AIR, IN FOCUS")
-    st.markdown("---")
-    st.caption("WORKSPACE")
-    nav = st.radio("Explore AIRFECTION", ROUTES, label_visibility="collapsed", key="nav_route")
-    st.markdown('<div class="diwali-sidebar"><span>🪔</span><strong>DIWALI 2026</strong><small>8 November · before / during / after</small></div>', unsafe_allow_html=True)
-    st.markdown("---")
-    st.caption("DATA MODE")
-    mode = st.selectbox("Data source", ["Demo · Synthetic data", "Live · Open-Meteo models", "CSV · Uploaded station data"],
-                        help="Demo is fictional; live is based on regional modeled environmental data, not monitoring stations.")
-    is_demo = mode.startswith("Demo")
-    is_uploaded = mode.startswith("CSV")
-    st.session_state["active_data_mode"] = mode
-    chosen_location = st.selectbox("Location", [*CITIES.keys(), "Custom coordinates"])
-    if chosen_location == "Custom coordinates":
-        city = st.text_input("Your location label", value="Custom location").strip() or "Custom location"
-        latitude = st.number_input("Latitude", min_value=-90., max_value=90., value=31.6340, step=.01, format="%.4f")
-        longitude = st.number_input("Longitude", min_value=-180., max_value=180., value=74.8723, step=.01, format="%.4f")
-    else:
+    st.markdown("### AIRFECTION")
+    st.caption("Air-quality information and forecasts")
+    st.divider()
+    nav = st.radio("Sections", ROUTES, key="nav_route")
+    st.divider()
+    if nav == ROUTES[1]:
+        st.caption("Diwali 2026: 8 November")
+        st.caption("Historically trained forecast; not an official government prediction.")
+        mode = "Diwali historical data model"
+        is_demo = False
+        is_uploaded = False
+        chosen_location = st.session_state.get("diwali_model_city", "Delhi")
         city = chosen_location
-        latitude, longitude = CITIES[city]
-    st.markdown('<div class="sidebar-note">◉ <b>Guardians of the Galaxy</b><br>Student-built forecasting prototype<br>Not an official AQI or medical service.</div>', unsafe_allow_html=True)
+        latitude, longitude = CITIES.get(city, CITIES["Delhi"])
+    else:
+        mode = st.selectbox("Data source", ["Demo · Synthetic data", "Live · Open-Meteo models", "CSV · Uploaded station data"],
+                            help="Demo numbers are artificial. Live values are regional modeled estimates, not measurements at a local station.")
+        is_demo = mode.startswith("Demo")
+        is_uploaded = mode.startswith("CSV")
+        chosen_location = st.selectbox("Location", [*CITIES.keys(), "Custom coordinates"])
+        if chosen_location == "Custom coordinates":
+            city = st.text_input("Location label", value="Custom location").strip() or "Custom location"
+            latitude = st.number_input("Latitude", min_value=-90., max_value=90., value=31.6340, step=.01, format="%.4f")
+            longitude = st.number_input("Longitude", min_value=-180., max_value=180., value=74.8723, step=.01, format="%.4f")
+        else:
+            city = chosen_location
+            latitude, longitude = CITIES[city]
+    st.session_state["active_data_mode"] = mode
+    st.divider()
+    st.caption("Developed by Guardians of the Galaxy")
+    st.caption("Independent student project. Not a Government of India website.")
 
 if is_demo and chosen_location == "Custom coordinates" and nav not in (ROUTES[5], ROUTES[6]):
     st.error("Custom coordinates require Live mode. Choose a preset city to view synthetic demo data.")
     st.stop()
 
 if nav == ROUTES[5]:
-    st.markdown('<div class="compact-hero"><div class="eyebrow">AIRFECTION V3.1 · EXPERIMENTAL VISION</div><h1>Sky Photo AI <span style="color:#fca5b9">✦</span></h1><p>Upload a sky photo for visual smoke, haze, fog and cloud matching.</p></div>', unsafe_allow_html=True)
+    st.title("Sky photo check")
+    st.caption("Experimental image matching for visible smoke, fog, haze and clouds")
     st.info("This is a visual-scene classification tool, not an AQI detector. Fog, dust, smog and clouds can look similar. Results never alter pollution forecasts.")
     left, right = st.columns([1.05,1], gap="large")
     with left:
@@ -246,7 +235,7 @@ if nav == ROUTES[5]:
             st.warning("Sky AI needs optional model packages. Install them in the server environment (GitHub deployment requirements or your Python environment):")
             st.code("py -m pip install -r requirements-vision.txt", language="powershell")
         st.markdown("**What happens after upload?** ① Image is analyzed by CLIP ② Scene descriptions are ranked ③ You review the result.")
-        analyze = st.button("✦ Analyze my sky", type="primary", disabled=sky_image is None, use_container_width=True)
+        analyze = st.button("Analyze photo", type="primary", disabled=sky_image is None, use_container_width=True)
         if analyze:
             try:
                 from vision_optional import classify_sky, classify_trained
@@ -265,7 +254,8 @@ if nav == ROUTES[5]:
         previous = st.session_state.get("sky_analysis")
         if previous and sky_file and previous[0] == __import__("hashlib").sha256(sky_file.getvalue()).hexdigest() and previous[1] == selected_vision:
             top = previous[2][0]
-            st.markdown(f'<div class="sky-result"><div class="tiny">TOP VISUAL MATCH</div><h2>{escape(top[0])}</h2><p>Relative comparison score {top[1]*100:.0f}% · not a probability of pollution</p></div>', unsafe_allow_html=True)
+            st.subheader("Visual match: " + str(top[0]))
+            st.caption(f"Relative matching score: {top[1]*100:.0f}% (not a calibrated pollution probability).")
             chart_df = pd.DataFrame(previous[2],columns=["Description","Relative matching score"]).set_index("Description")
             st.bar_chart(chart_df, horizontal=True)
             from vision_optional import interpretation
@@ -275,7 +265,7 @@ if nav == ROUTES[5]:
                 st.info(interpretation(previous[2]))
             st.caption("These are relative matches against a fixed list, not calibrated probabilities. Never interpret a non-smoke label as 'NOT POLLUTION'.")
         elif sky_image is None:
-            st.markdown('<div class="sky-empty">☁️  Your sky analysis will appear here once you upload a photo.</div>', unsafe_allow_html=True)
+            st.caption("Upload a photo and select Analyze photo to see a result.")
     with st.expander("How do we train our own AIRFECTION sky model?",expanded=False):
         st.markdown("""
 **You can use pretrained CLIP immediately — no training required.** To adapt it to photos from your region:
@@ -293,7 +283,8 @@ This version adds explicit industrial-smoke candidate descriptions. Changing pro
     st.stop()
 
 if nav == ROUTES[6]:
-    st.markdown('<div class="compact-hero"><div class="eyebrow">REAL DATA STUDIO</div><h1>Data Lab</h1><p>Add your own PM2.5 measurements or download station readings.</p></div>', unsafe_allow_html=True)
+    st.title("Data sources")
+    st.caption("Import hourly pollution observations to train the forecasting model")
     label_section("Data engineering studio", "Bring your own real PM2.5 data", "Upload station measurements, add weather automatically, download a training-ready CSV, and train AIRFECTION on it.", right="YOUR DATA")
     st.info("Use ONE station per file. PM2.5 must be in µg/m³, not AQI. Timestamps must represent the local clock time at the selected coordinates. No data is uploaded to a shared database; it is held in your running Streamlit session.")
     first, second = st.tabs(["1 · Upload CSV & add weather", "2 · Download OpenAQ readings"])
@@ -329,8 +320,13 @@ if nav == ROUTES[6]:
                 st.session_state["user_dataset"] = combined.copy()
                 st.success("Dataset loaded into this session. Choose 'CSV · Uploaded station data' in the sidebar. Future weather in that mode is an assumed-weather REPLAY, not a live forecast.")
     with second:
-        st.markdown("[Create your OpenAQ API key](https://explore.openaq.org/) · [OpenAQ API instructions](https://docs.openaq.org/). Use a private key only in your session and do not commit it to GitHub.")
-        openaq_key = st.text_input("OpenAQ API key (not saved)", type="password")
+        st.caption("Optional developer source: OpenAQ station data. The maintainer can configure OPENAQ_API_KEY in Streamlit App settings → Secrets; website visitors never enter API keys.")
+        try:
+            openaq_key = st.secrets.get("OPENAQ_API_KEY", "")
+        except Exception:
+            openaq_key = ""
+        if not openaq_key:
+            st.info("OpenAQ integration is not configured. The Diwali Forecast works without any key using a separate public historical dataset.")
         radius = st.slider("Search station radius (km)", 1, 25, 20)
         if st.button("Find nearby PM2.5 stations", disabled=not bool(openaq_key)):
             try:
@@ -366,124 +362,8 @@ if nav == ROUTES[6]:
     st.stop()
 
 if nav == ROUTES[1]:
-    event_date = DIWALI_BY_YEAR[2026]
-    st.markdown("""<div class="diwali-hero"><div class="diwali-eyebrow">🪔 AIRFECTION · REAL FESTIVAL HISTORY</div>
-      <h1>Diwali Pollution <span>2026</span></h1>
-      <p>Before · During · After Diwali | 8 November 2026</p>
-      <div class="diwali-subtext">Ground-station observations are not 2026 forecasts. See both clearly labeled below.</div></div>""",unsafe_allow_html=True)
-    st.info("**Data clarity:** This page separates actual historical station measurements, historical model estimates, and published 2026 forecasts. A daily average can conceal a short Diwali-night peak. Pollution can rise or fall, depending on real conditions.")
-    st.markdown("### ① Choose evidence for the historical comparison")
-    source_mode = st.selectbox("Diwali historical data", [
-        "Measured CPCB stations (real observations)",
-        "Open-Meteo CAMS (historical regional model)",
-        "Your uploaded station CSV", "Synthetic demo (fictional)"],key="diwali_source")
-    historic_year=2024
-    archive_city=city if city in CITIES else "Delhi"
-    upcoming=pd.DataFrame()
-    festival_history=pd.DataFrame()
-    source_label=""
-    if source_mode.startswith("Measured"):
-        c1,c2=st.columns(2)
-        with c1:
-            archive_city=st.selectbox("Indian monitoring city",list(dict.fromkeys([archive_city,'Delhi','Amritsar','Ludhiana','Jalandhar','Chandigarh','Mumbai','Kolkata','Lucknow','Jaipur','Patna'])),key="festival_station_city")
-            historic_year=st.selectbox("Historical Diwali year",[2024,2025,2023],key="cpcb_year")
-        with c2:
-            st.caption("Public API demo works for **2024 only**. For 2025 or 2023, enter a free personal key. Key is used for this session and is not added to GitHub.")
-            try: saved_key=st.secrets.get('XKDR_API_KEY','')
-            except Exception: saved_key=''
-            xkdr_key=st.text_input("XKDR API key (optional for 2024)", type="password",value=saved_key,key="festival_token")
-            st.markdown("[Get a free key](https://airquality.xkdr.org/signup) · [Official API documentation](https://airquality.xkdr.org/#docs)")
-        st.caption("Source: **CPCB ground monitoring network, served by XKDR Forum**. This is an **unweighted city mean across reporting stations**, not hyperlocal AQI. API times use IST. Data are not fully quality-assured.")
-        try:
-            with st.spinner("Loading genuine PM2.5 station observations from Indian monitoring networks…"):
-                festival_history=festival_stations(archive_city,historic_year,xkdr_key)
-            source_label=f"Measured CPCB station PM2.5 · {archive_city} · Diwali {historic_year}"
-            st.success(f"Loaded {len(festival_history):,} measured station-hour aggregates. No synthetic values were added.")
-        except Exception as exc:
-            st.error(f"Couldn't retrieve the station archive: {exc}")
-            st.info("Try Delhi + 2024 (public demo access); for older/other years supply a personal XKDR API key. Alternatively choose the explicitly labeled CAMS historical model or upload real station readings. We never invent missing station values.")
-    elif source_mode.startswith("Open-Meteo"):
-        years=st.multiselect("Historical model years",[2024,2025,2023],default=[2024,2025],key="cams_hist_years")
-        frames=[]
-        for y in years:
-            try:frames.append(festival_historical(latitude,longitude,y))
-            except Exception as exc:st.warning(f"CAMS {y} unavailable: {exc}")
-        festival_history=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
-        source_label="Open-Meteo CAMS · historical REGIONAL MODEL, not CPCB measurements"
-    elif source_mode.startswith("Your"):
-        if "user_dataset" in st.session_state:
-            festival_history=from_uploaded_history(st.session_state["user_dataset"])
-            source_label="Your uploaded station PM2.5 observations"
-        else:st.warning("Open Data Lab, upload a real station CSV, then click 'Use this dataset to train AIRFECTION'.")
-    else:
-        festival_history=synthetic_archive()
-        source_label="SYNTHETIC DEMONSTRATION — FAKE VALUES"
-        st.warning("SIMULATED data only. Do not present the numbers as real measurements.")
-    if not festival_history.empty:
-        historical_days=daily_stats(festival_history,'pm2_5',min_samples=12)
-        selected_years=sorted(historical_days.year.unique()) if not historical_days.empty else []
-        st.markdown(f"**Historical source:** {source_label}")
-        if 'station_count' in festival_history:
-            station_max=int(festival_history.station_count.max())
-            st.caption(f"Reporting monitors varied by hour; up to {station_max} station(s). No sensor interpolation or PM2.5-to-Indian-AQI conversion.")
-        st.markdown("### ② What actually happened around Diwali?")
-        if len(selected_years)==1:
-            year=int(selected_years[0]); festival_day=DIWALI_BY_YEAR[year]
-            evening=festival_evening_stats(festival_history,year,festival_day)
-            st.markdown("**Evening-focused comparison** — 18:00–23:00 on the preceding and festival evenings; 00:00–05:00 the morning after.")
-            cols=st.columns(3)
-            for col,(name,values) in zip(cols,evening.items()):
-                if values:col.metric(name,f"{values['pm2_5']:.1f} µg/m³",help=f"Average from {values['hours']} observed hours; peak {values['peak']:.1f} µg/m³.")
-                else:col.metric(name,"Not enough measurements")
-        else:
-            st.caption("Multiple historical years selected. Use the daily timeline below to compare them; the evening cards appear when one year is selected.")
-        if not historical_days.empty:
-            fig=go.Figure()
-            for y in selected_years:
-                d=historical_days[historical_days.year==y].sort_values('offset')
-                fig.add_trace(go.Scatter(x=d.offset,y=d['mean'],name=f"{y} daily measured/model mean",mode="lines+markers",line=dict(width=3)))
-            fig.update_layout(xaxis_title="Days relative to Diwali (0 = festival day)",yaxis_title="24-hour mean PM2.5 (µg/m³)")
-            st.plotly_chart(plot_style(fig,350),use_container_width=True)
-            st.caption("Daily averages can hide short-lived peaks at night. See hourly records below. Missing days are omitted rather than replaced with generated values.")
-            st.dataframe(historical_days[['year','offset','date','mean','peak','n','source']],use_container_width=True,hide_index=True)
-        st.markdown("### ③ Examine actual hourly observations")
-        chosen_offset=st.slider("Historical days from Diwali",-3,3,0,key='historical_offset')
-        shown=festival_history[festival_history['offset']==chosen_offset].copy()
-        if not shown.empty:
-            fig2=go.Figure()
-            for y in sorted(shown.year.unique()):
-                sub=shown[shown.year==y].sort_values('time')
-                fig2.add_trace(go.Scatter(x=sub.time.dt.hour,y=sub.pm2_5,name=f"{y} hourly PM2.5",mode='lines+markers'))
-            fig2.update_layout(xaxis_title="Hour (India local time)",yaxis_title="PM2.5 µg/m³")
-            st.plotly_chart(plot_style(fig2,330),use_container_width=True)
-            st.caption("Measurements are from actual past Diwali dates shown in the table, not a prediction for November 2026.")
-        st.download_button("Download historical observations CSV",festival_history.to_csv(index=False).encode('utf-8'),file_name=f"airfection_historical_{archive_city}_{historic_year}.csv",mime='text/csv')
-    else:
-        st.warning("No historical records were loaded. Change city, historical year or data source.")
-    st.markdown("### ④ Forecast for Diwali 2026 — separate from old observations")
-    st.info("2026 forecasts below come from the **external CAMS model**, never from the past-year station records. AIRFECTION's own Random Forest covers only the next 1–6 hours on Dashboard. Data outside the provider's short forecast window remains unavailable.")
-    try:
-        upcoming=festival_future(latitude,longitude)
-        source_forecast="Open-Meteo CAMS regional modeled forecast"
-    except Exception as exc:
-        upcoming=pd.DataFrame()
-        st.warning(f"Forecast provider unavailable: {exc}")
-    outlook=build_outlook(festival_history,upcoming,variable='pm2_5')
-    pick_day=st.slider("2026 date relative to Diwali",-3,3,0,key='diwali_2026_day')
-    day=event_date+timedelta(days=pick_day)
-    detail=outlook[outlook.offset==pick_day].iloc[0]
-    st.markdown(f"**{phase_name(pick_day)} — {day:%d %B %Y}**")
-    left,right=st.columns(2)
-    left.metric("2026 CAMS daily PM2.5 forecast", f"{detail['forecast']:.1f} µg/m³" if pd.notna(detail['forecast']) else "Not published")
-    right.metric("Historical daily reference (NOT forecast)",f"{detail['reference']:.1f} µg/m³" if pd.notna(detail['reference']) else "Unavailable")
-    if pd.notna(detail['forecast']):st.caption(f"Forecast based on {int(detail['forecast_hours'])} available hourly CAMS values. This does not establish Indian AQI.")
-    else:st.warning("No complete published daily CAMS forecast for this date. We do not fill it with historical values.")
-    fig3=go.Figure()
-    fig3.add_trace(go.Scatter(x=outlook['date'],y=outlook['reference'],name='Historical daily reference ONLY',line=dict(dash='dash',color='#cfb1be'),mode='lines+markers'))
-    fig3.add_trace(go.Scatter(x=outlook['date'],y=outlook['forecast'],name='Published 2026 CAMS forecast ONLY',line=dict(color='#f57286',width=4),mode='lines+markers'))
-    fig3.update_layout(xaxis_title="2026 dates",yaxis_title="PM2.5 µg/m³")
-    st.plotly_chart(plot_style(fig3,330),use_container_width=True)
-    st.caption("Sources: [XKDR India Air Quality Database / CPCB](https://airquality.xkdr.org/) · [Open-Meteo CAMS](https://open-meteo.com/en/docs/air-quality-api). Data and results are NOT official Indian AQI. Higher on Diwali is not guaranteed by any genuine dataset.")
+    from diwali_page import render_diwali_page
+    render_diwali_page(city)
     st.stop()
 
 with st.spinner("Preparing forecast and evaluating the model…"):
@@ -514,25 +394,14 @@ with st.spinner("Preparing forecast and evaluating the model…"):
         st.info("Try Demo mode. Demo numbers are artificial and are never displayed as live observations.")
         st.stop()
 
-st.markdown('''
-<div class="hero"><div style="position:relative;z-index:2"><div class="eyebrow">GUARDIANS OF THE GALAXY  ·  ENVIRONMENTAL INTELLIGENCE</div>
-<h1>AIRFECTION<span style="color:#ffd3e2">.</span></h1>
-<p class="sub">Predict the smog before the sparkle.<br>Explore pollution before, on and after Diwali — plus the next six hours.</p>
-<div class="hero-pills"><span class="pill">✧ AI forecast</span><span class="pill">◎ Future pollution map</span><span class="pill">♡ Health awareness</span></div>
-</div><div class="orb"></div></div>
-''', unsafe_allow_html=True)
+st.title("Air quality outlook")
+st.caption("AIRFECTION | Six-hour pollution outlook with data-source information")
+st.info("For the main project forecast, select 'Diwali 2026 forecast' in the left menu. This section shows short-term PM2.5 estimates.")
 
 st.write("")
-label_section("Interactive time travel", "Move forward into the forecast", "Select any hour ahead. All charts, highlights and future-map predictions follow this slider.", right="HOURLY · 1—6 HOURS")
-slider_col, info_col = st.columns([4, 1.15], vertical_alignment="center")
-with slider_col:
-    selected_hour = st.slider("Forecast time", min_value=min(HORIZONS), max_value=max(HORIZONS), value=3,
-                              step=1, format="+%d hours", label_visibility="collapsed")
-    marks = st.columns(len(HORIZONS))
-    for idx, h in enumerate(HORIZONS):
-        marks[idx].caption(f"+{h}h")
-with info_col:
-    st.markdown(f'<div class="panel accent" style="text-align:center;padding:12px;margin:0"><div class="tiny">SELECTED HORIZON</div><div class="timeline-hour">+{selected_hour}h</div></div>', unsafe_allow_html=True)
+label_section("Forecast", "Select forecast hour", "Choose the number of hours ahead to view.")
+selected_hour = st.slider("Hours ahead", min_value=min(HORIZONS), max_value=max(HORIZONS), value=3, step=1,
+                          format="+%d h")
 
 picked = predictions.loc[predictions["horizon"] == selected_hour].iloc[0]
 current_pm = float(latest["pm2_5"])
@@ -544,40 +413,37 @@ mode_badge = 'UPLOADED SENSOR DATA · ASSUMED FUTURE WEATHER' if is_uploaded els
 source_kind = "uploaded sensor" if is_uploaded else ("demo-generated" if is_demo else "Open-Meteo CAMS modeled")
 forecast_label = "Illustrative/replay forecast" if (is_demo or is_uploaded) else "Model-derived forecast"
 
-label_section("Forecast command center", f"{city} at a glance", f"{mode_badge} · Model reference time: {pd.Timestamp(latest['time']):%d %b %Y, %I:%M %p} ({local_zone})")
+label_section("Forecast", f"{city} | Summary", f"{mode_badge} · Model reference time: {pd.Timestamp(latest['time']):%d %b %Y, %I:%M %p} ({local_zone})")
 metric1, metric2, metric3, metric4 = st.columns(4)
 metric1.metric("Current PM2.5 · µg/m³", f"{current_pm:.1f}", help=f"Latest {source_kind} concentration, not the official AQI.")
 metric2.metric(f"Forecast +{selected_hour}h · µg/m³", f"{future_pm:.1f}", f"{diff:+.1f} vs current", delta_color="inverse")
 metric3.metric("Forecast peak · 6h", f"{float(peak['pm2_5']):.1f}", f"+{int(peak['horizon'])}h")
 metric4.metric("Holdout prediction error", f"{stats['holdout_mae']:.1f}", "MAE · µg/m³", delta_color="off")
 
-warning_source = ("✦ <b>Your uploaded observations:</b> Forecasts use assumed future weather derived from past readings. They are demonstration/replay estimates, NOT a live forecast." if is_uploaded else
-    ("✦ <b>Demo preview:</b> Every pollution value, map point and model score is derived from synthetic data." if is_demo else
-     "✦ <b>Modeled environmental data:</b> Live values are regional CAMS model outputs, not verified local sensors. Do not infer street-level pollution."))
-st.markdown(f'<div class="warning-note">{warning_source} All displayed numbers are <b>PM2.5 concentrations (µg/m³), NOT official Indian AQI.</b></div>', unsafe_allow_html=True)
+st.caption(f"Data source: {mode_badge}. These are PM2.5 concentrations in µg/m³, not official Indian AQI.")
 
 if nav == ROUTES[0]:
-    label_section("The big picture", "Your next six hours", "See the forecast curve and immediately spot periods with rising or falling concentrations.", right="MODEL FORECAST")
+    label_section("Forecast", "Next six hours", "See the forecast curve and immediately spot periods with rising or falling concentrations.", right="MODEL FORECAST")
     left, right = st.columns([1.85, 1], gap="medium")
     with left:
         st.plotly_chart(line_chart(latest, predictions, selected_hour), use_container_width=True, config={"displayModeBar": False})
     with right:
         trend = "rising" if diff > 3 else "falling" if diff < -3 else "relatively steady"
-        panel("◉ Forecast insight", f"At +{selected_hour} hours, PM2.5 is projected to be {future_pm:.1f} µg/m³, {abs(diff):.1f} µg/m³ {'above' if diff>0 else 'below' if diff<0 else 'from'} the latest reference level. The projected trend is {trend}.", "accent")
-        panel("✧ Lower forecast period", f"Of the six modeled future hours, +{int(minpoint['horizon'])}h has the lowest predicted PM2.5 ({float(minpoint['pm2_5']):.1f} µg/m³). This does not establish that outdoor exposure is safe.", "green")
-    label_section("Explore more", "How AIRFECTION helps", "Navigate from the sidebar to explore each feature.")
+        panel("Forecast summary", f"At +{selected_hour} hours, PM2.5 is projected to be {future_pm:.1f} µg/m³, {abs(diff):.1f} µg/m³ {'above' if diff>0 else 'below' if diff<0 else 'from'} the latest reference level. The projected trend is {trend}.", "accent")
+        panel("Lowest forecast hour", f"Of the six modeled future hours, +{int(minpoint['horizon'])}h has the lowest predicted PM2.5 ({float(minpoint['pm2_5']):.1f} µg/m³). This does not establish that outdoor exposure is safe.", "green")
+    label_section("Navigation", "Other sections", "Use the left menu to view the forecast map, health information or methodology.")
     a, b, c = st.columns(3)
-    with a: panel("🪔 Diwali Outlook", "See before, during and after Diwali; compare historical patterns with published future forecasts.")
-    with b: panel("◎ Future Heatmap", "A regional surface displaying modeled future pollution. Darker red means higher concentration.")
-    with c: panel("♡ Health Shield", "Source-linked advice for vulnerable groups based on published health guidance.")
+    with a: panel("Diwali forecast", "Explore AIRFECTION’s own hour-by-hour 2026 Diwali forecast trained on historical festival data.")
+    with b: panel("Pollution map", "A regional surface displaying modeled future pollution. Darker red means higher concentration.")
+    with c: panel("Health information", "Source-linked advice for vulnerable groups based on published health guidance.")
     def _open_diwali_page():
         st.session_state["nav_route"] = ROUTES[1]
-    st.button("🪔 Explore before / on / after Diwali 2026", use_container_width=True,
+    st.button("View Diwali 2026 forecast", use_container_width=True,
               on_click=_open_diwali_page)
 
 elif nav == ROUTES[2]:
-    label_section("Live forecast geography", "Future pollution heatmap",
-                  "Move the forecast slider to watch model values change. Darker red means a higher value.",
+    label_section("Map", "Pollution forecast map",
+                  "Select a forecast hour to compare modeled concentrations across the region.",
                   right=f"+{selected_hour}H FORECAST")
     with st.spinner("Preparing the regional forecast cells…"):
         try:
@@ -598,7 +464,7 @@ elif nav == ROUTES[2]:
         render_map(grid, city, (latitude,longitude),metric=metric)
         render_legend(metric)
     with dcol:
-        panel("◉ AIRFECTION forecast", f"Selected location: {city}. ML PM2.5 prediction at +{selected_hour}h: {future_pm:.1f} µg/m³.", "accent")
+        panel("Selected-location estimate", f"Selected location: {city}. ML PM2.5 prediction at +{selected_hour}h: {future_pm:.1f} µg/m³.", "accent")
         valid = grid.dropna(subset=[metric])
         if len(valid):
             st.metric("Region's highest map value", f"{float(valid[metric].max()):.0f}" + (" US AQI" if metric=="us_aqi" else " µg/m³"))
@@ -613,13 +479,13 @@ elif nav == ROUTES[2]:
     with st.expander("See the data behind each colored region"):
         st.dataframe(grid.rename(columns={"lat":"Latitude","lon":"Longitude","pm2_5":"PM2.5 µg/m³","us_aqi":"US AQI","source":"Source"}),
                      use_container_width=True,hide_index=True)
-        st.caption("The interpolated surface changes when the selected forecast hour changes. Data values, not the number of map points, determine the colors.")
+        st.caption("Colours represent the modeled value at each location. Transparency fades where there are no nearby forecast samples.")
 
 elif nav == ROUTES[3]:
-    label_section("Early warning system", "Spike Radar & Recovery Clock", "Adjust the thresholds and see whether any forecast hour crosses them.")
+    label_section("Alerts", "Forecast thresholds", "Adjust the thresholds and see whether any forecast hour crosses them.")
     left, right = st.columns(2, gap="medium")
     with left:
-        panel("↗ Spike Radar", "Choose how much PM2.5 must rise above the latest reference reading before the app flags a potential spike.", "accent")
+        panel("Pollution rise alert", "Choose how much PM2.5 must rise above the latest reference reading before the app flags a potential spike.", "accent")
         rise = st.slider("Alert on an increase of at least (µg/m³)", 5, 100, 25, 5)
         spikes = predictions[predictions["pm2_5"] - current_pm >= rise]
         if spikes.empty:
@@ -628,7 +494,7 @@ elif nav == ROUTES[3]:
             first = spikes.iloc[0]
             st.warning(f"Potential spike at +{int(first['horizon'])}h: +{float(first['pm2_5'])-current_pm:.1f} µg/m³ vs latest reference. This is a forecast, not a live alert.")
     with right:
-        panel("◷ Recovery Clock", "Set a concentration level and identify the earliest forecast time predicted to fall below it.", "green")
+        panel("Below-threshold estimate", "Set a concentration level and identify the earliest forecast time predicted to fall below it.", "green")
         recover_under = st.slider("Find the first forecast below (µg/m³)", 10, 300, 75, 5)
         recoveries = predictions[predictions["pm2_5"] < recover_under]
         if recoveries.empty:
@@ -640,11 +506,11 @@ elif nav == ROUTES[3]:
     st.caption("The selected concentration thresholds are personal display preferences, not medically established safe levels. Alerts only appear inside this website. Forecast recovery is not guaranteed.")
 
 elif nav == ROUTES[4]:
-    label_section("WHO + peer-reviewed research", "Health Shield", "Source-linked, general exposure advice — not diagnosis or WHO certification of AIRFECTION.", right="EVIDENCE-BASED")
+    label_section("Health", "Health information", "Source-linked, general exposure advice — not diagnosis or WHO certification of AIRFECTION.", right="EVIDENCE-BASED")
     group = st.selectbox("Who are you planning for?", list(__import__('health_evidence').GROUPS))
     headline, tips, references = guidance(group)
     panel("Selected forecast • PM2.5 only", f"At +{selected_hour} hours, AIRFECTION estimates {future_pm:.1f} µg/m³. This hourly value cannot establish an individual's medical risk or official AQI category.", "accent")
-    panel("♡ " + headline, "Practical precautions supported by public-health literature", "green")
+    panel(headline, "Practical precautions supported by public-health literature", "green")
     for item in tips:
         st.markdown("- " + item)
     st.markdown("**Sources supporting this guidance**")
@@ -668,7 +534,7 @@ elif nav == ROUTES[4]:
     st.warning("This is an educational exposure-reduction tool. AIRFECTION is not WHO-certified, and the WHO does not endorse its predictions. Seek prompt medical care for severe breathing difficulty, chest pain, or other emergency symptoms. Continue prescribed medical treatment.")
 
 elif nav == ROUTES[7]:
-    label_section("Transparency first", "Inside the prediction engine", "What AIRFECTION really uses, how it was tested, and where limitations remain.", right="REAL MODEL")
+    label_section("Model", "Prediction model and testing", "What AIRFECTION really uses, how it was tested, and where limitations remain.", right="REAL MODEL")
     c1, c2, c3 = st.columns(3)
     c1.metric("Chronological train rows", f"{stats['training_examples']:,}")
     c2.metric("Held-out test rows", f"{stats['test_examples']:,}")
@@ -679,10 +545,10 @@ elif nav == ROUTES[7]:
         st.success("The model beat the persistence baseline on this holdout period. This does not guarantee future or Diwali-specific accuracy.")
     imp = (pd.DataFrame({"Feature": stats["features"], "Importance": model.feature_importances_})
            .sort_values("Importance", ascending=False).head(9).iloc[::-1])
-    fig = go.Figure(go.Bar(x=imp["Importance"], y=imp["Feature"], orientation="h", marker_color="#f98bab"))
+    fig = go.Figure(go.Bar(x=imp["Importance"], y=imp["Feature"], orientation="h", marker_color="#285e83"))
     fig.update_xaxes(title_text="Feature importance (not cause and effect)")
     st.plotly_chart(plot_style(fig, 340), use_container_width=True, config={"displayModeBar": False})
-    st.markdown("**Your actual forecast table**")
+    st.markdown("**Forecast data**")
     table = predictions.rename(columns={"horizon": "Hours ahead", "time": "Local forecast time", "pm2_5": "Predicted PM2.5 (µg/m³)"})
     st.dataframe(table, hide_index=True, use_container_width=True)
     st.download_button("↓ Download forecast CSV", data=table.to_csv(index=False).encode("utf-8"), file_name="airfection_pm25_forecast.csv", mime="text/csv")
@@ -701,4 +567,5 @@ elif nav == ROUTES[7]:
 
 
 st.write("")
-st.markdown('<div style="border-top:1px solid #293142;padding-top:16px;color:#8798ac;font-size:.78rem;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><span>✺ AIRFECTION · PREDICT THE SMOG BEFORE THE SPARKLE</span><span>Built by Guardians of the Galaxy · Student hackathon prototype</span></div>', unsafe_allow_html=True)
+st.divider()
+st.caption("AIRFECTION | Guardians of the Galaxy | Independent student project. Not an official air-quality service.")
