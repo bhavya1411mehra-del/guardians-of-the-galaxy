@@ -12,7 +12,7 @@ CITIES = {
     "Delhi": (28.6139, 77.2090),
 }
 
-DIWALI_DATES = [pd.Timestamp(v) for v in ["2023-11-12", "2024-11-01", "2025-10-20", "2026-11-08"]]
+DIWALI_DATES = [pd.Timestamp(v) for v in ["2023-11-12", "2024-10-31", "2025-10-20", "2026-11-08"]]
 
 
 def demo_city(city: str) -> pd.DataFrame:

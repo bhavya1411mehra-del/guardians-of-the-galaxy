@@ -6,4 +6,6 @@ requests>=2.31,<3.0
 plotly>=5.22,<7.0
 pydeck>=0.9,<1.0
 Pillow>=10.0,<13.0
+
+# Needed so pretrained CLIP works in the deployed website. May require significant RAM.
 -r requirements-vision.txt

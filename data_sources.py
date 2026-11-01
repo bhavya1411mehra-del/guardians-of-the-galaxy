@@ -107,7 +107,7 @@ def get_spatial_forecast_grid(lat: float, lon: float, target_time: pd.Timestamp,
     params = {
         "latitude": ",".join(str(round(x, 4)) for x, _ in requests_points),
         "longitude": ",".join(str(round(y, 4)) for _, y in requests_points),
-        "timezone": "auto", "hourly": "pm2_5,us_aqi", "forecast_days": 2,
+        "timezone": "auto", "hourly": "pm2_5,us_aqi", "forecast_days": 7,
         "domains": "cams_global", "cell_selection": "nearest",
     }
     payloads = _request(AIR_URL, params)

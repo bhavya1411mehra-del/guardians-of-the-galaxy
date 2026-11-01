@@ -4,7 +4,8 @@ Fine-tunes *class prototypes*, not the whole CLIP neural network. Uses pretraine
 CLIP image embeddings and mean class centroids. Evaluates on held-out photos.
 
 Folder structure:
- sky_photos/clear/*.jpg; sky_photos/cloudy/*.jpg; sky_photos/fog/*.jpg; sky_photos/haze/*.jpg
+ sky_photos/industrial_smoke/*.jpg; sky_photos/clear/*.jpg;
+ sky_photos/cloudy/*.jpg; sky_photos/fog/*.jpg; sky_photos/haze/*.jpg
 Run: python train_sky.py --data sky_photos --output sky_prototypes.npz
 """
 from __future__ import annotations
@@ -62,8 +63,14 @@ def train(data: str, output: str, seed: int = 42):
     prototypes = np.stack(prototypes)
     scores = embeddings[test_i] @ prototypes.T
     predicted = np.asarray(names)[scores.argmax(axis=1)]
+    from sklearn.metrics import classification_report, confusion_matrix
     accuracy = float((predicted == labels[test_i]).mean())
     print(f'Holdout images: {len(test_i)} | Accuracy: {accuracy:.1%}')
+    print('Per-class evaluation:')
+    print(classification_report(labels[test_i], predicted, labels=names, zero_division=0))
+    print('Confusion matrix (rows=true, columns=predicted):')
+    print('Classes:', ', '.join(names))
+    print(confusion_matrix(labels[test_i], predicted, labels=names))
     print('Small tests do not prove real-world performance. Evaluate on photos from different days/devices/locations.')
     np.savez_compressed(output, labels=np.asarray(names), prototypes=prototypes, holdout_accuracy=accuracy)
     print(f'Saved {output}. This does not estimate AQI or PM2.5.')
