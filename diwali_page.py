@@ -18,18 +18,19 @@ def _trained_outlook(city: str):
 
 def _design(fig, height=330):
     fig.update_layout(height=height, margin=dict(l=8,r=10,t=20,b=8),
-        paper_bgcolor='#ffffff', plot_bgcolor='#ffffff',
-        font=dict(color='#3a5060',size=12),
+        paper_bgcolor='#151c2b', plot_bgcolor='#151c2b',
+        font=dict(color='#d9e1ed',size=12),
         legend=dict(orientation='h', y=1.13), hovermode='x unified',
-        xaxis=dict(gridcolor='#e6ecf0'),
-        yaxis=dict(gridcolor='#e6ecf0'))
+        xaxis=dict(gridcolor='rgba(200,213,233,.09)'),
+        yaxis=dict(gridcolor='rgba(200,213,233,.09)'))
     return fig
 
 
 def render_diwali_page(default_city='Delhi'):
-    st.title("Diwali 2026 air quality forecast")
-    st.write("**8 November 2026** | Hourly estimates for 5–11 November")
-    st.caption("Choose a city, date and hour. Estimates are trained on historical Diwali periods, not published 2026 forecasts.")
+    st.markdown('''<div class="diwali-hero"><div class="diwali-eyebrow">🪔 AIRFECTION · OWN AI FORECAST</div>
+      <h1>Predict Diwali <span>2026</span></h1>
+      <p>5–11 November · Hour by hour · Before / During / After</p>
+      <div class="diwali-subtext">Our model learns previous Diwali patterns and forecasts the 2026 event. No forecast publishing delay and no visitor API key.</div></div>''', unsafe_allow_html=True)
     st.caption('Forecast type: historical-pattern machine learning estimate — not an official government AQI forecast or a guarantee about 2026 weather.')
     try:
         with st.spinner('Loading archived Indian air-quality observations (first load only)…'):
@@ -53,7 +54,7 @@ def render_diwali_page(default_city='Delhi'):
 
     c1,c2 = st.columns(2)
     with c1:
-        day_offset = st.slider('Day relative to Diwali', -3, 3, 0, 1,
+        day_offset = st.slider('Date relative to Diwali', -3, 3, 0, 1,
                                format='%d days', key='festival_predict_day')
     with c2:
         hour = st.slider('Time of day (IST)', 0, 23, 20, 1, key='festival_predict_hour')
@@ -65,7 +66,7 @@ def render_diwali_page(default_city='Delhi'):
     row = chosen.iloc[0]
     day = forecast[forecast.time.dt.date == picked_day].copy()
     group = phase_label(day_offset)
-    st.subheader(f'{group} | {selected_time:%d %B %Y, %I:%M %p} IST')
+    st.markdown(f'### {group} · {selected_time:%d %B %Y, %I:%M %p} IST')
     k1,k2,k3 = st.columns(3)
     k1.metric(f'2026 predicted {info["unit"]}', f'{row.forecast:.0f}' if info['metric']=='aqi' else f'{row.forecast:.1f}',
               help=info['label'])
@@ -79,28 +80,28 @@ def render_diwali_page(default_city='Delhi'):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=day.time,y=day.upper,mode='lines',line=dict(width=0),showlegend=False,hoverinfo='skip'))
     fig.add_trace(go.Scatter(x=day.time,y=day.lower,mode='lines',fill='tonexty',
-                             fillcolor='rgba(40,94,131,.12)',line=dict(width=0),
+                             fillcolor='rgba(255,114,139,.14)',line=dict(width=0),
                              name='Indicative historical variation',hoverinfo='skip'))
     fig.add_trace(go.Scatter(x=day.time,y=day.forecast,mode='lines+markers',
-                             name='AIRFECTION 2026 forecast',line=dict(color='#285e83',width=2)))
+                             name='AIRFECTION 2026 forecast',line=dict(color='#fc91aa',width=3,shape='spline')))
     fig.add_trace(go.Scatter(x=[selected_time], y=[row.forecast],name='Selected hour',mode='markers',
-                             marker=dict(color='#b25234',size=11,line=dict(color='#fff',width=2))))
+                             marker=dict(color='#a3f6d5',size=14,line=dict(color='#132129',width=2))))
     fig.update_xaxes(tickformat='%I %p',title='Hour of day (IST)')
     fig.update_yaxes(title=info['label'])
     st.plotly_chart(_design(fig,360),use_container_width=True,config={'displayModeBar':False})
 
-    st.subheader('Seven-day outlook | 5–11 November')
+    st.markdown('### Seven-day AI forecast · 5–11 November')
     days = forecast.assign(day=forecast.time.dt.date).groupby('day',as_index=False).agg(
         mean=('forecast','mean'),peak=('forecast','max'))
     fig2=go.Figure()
     fig2.add_trace(go.Scatter(x=forecast.time,y=forecast.forecast,mode='lines',
-                              name='Hourly model forecast',line=dict(color='#285e83',width=2)))
+                              name='Hourly model forecast',line=dict(color='#f5a4b4',width=2)))
     fig2.add_vrect(x0=pd.Timestamp(TARGET),x1=pd.Timestamp(TARGET)+pd.Timedelta(days=1),
-                   fillcolor='#a9bfce',opacity=.2,line_width=0)
+                   fillcolor='#d35a79',opacity=.11,line_width=0)
     fig2.update_xaxes(title='Time (India Standard Time)',tickformat='%d %b')
     fig2.update_yaxes(title=info['label'])
     st.plotly_chart(_design(fig2,270),use_container_width=True,config={'displayModeBar':False})
-    st.download_button('Download hourly forecast data (CSV)',
+    st.download_button('Download predicted 2026 hourly data (CSV)',
         forecast.to_csv(index=False).encode('utf-8'),
         file_name=f'airfection_{city.lower().replace(" ","_")}_diwali_2026_predictions.csv',mime='text/csv')
     with st.expander('How was this prediction trained and tested?'):
