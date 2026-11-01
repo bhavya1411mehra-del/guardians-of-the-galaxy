@@ -15,6 +15,7 @@ from data_sources import AIR_URL, _hourly, _request
 
 # Holiday dates confirmed against Government of India lists.
 DIWALI_BY_YEAR: dict[int, date] = {
+    2023: date(2023, 11, 12),
     2024: date(2024, 10, 31),
     2025: date(2025, 10, 20),
     2026: date(2026, 11, 8),

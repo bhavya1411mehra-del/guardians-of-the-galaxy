@@ -18,6 +18,7 @@ from data_lab import (validate_pollution_csv, full_training_csv, fetch_weather_f
                       find_pm25_sensors, download_pm25_hours, REQUIRED)
 from health_evidence import guidance, reference_for, SOURCES, pm25_24h_mean, WHO_GUIDELINE
 from forecasting import HORIZONS, forecast, train_model
+from station_archive import download_cpcb_festival, festival_evening_stats, PUBLIC_2024_KEY
 from festival import (DIWALI_BY_YEAR, OFFSETS, historical_archive, provider_future,
                       from_uploaded_history, synthetic_archive, build_outlook,
                       daily_stats, phase_summary, phase_name)
@@ -59,6 +60,11 @@ def festival_historical(lat: float, lon: float, year: int):
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def festival_future(lat: float, lon: float):
     return provider_future(lat, lon)
+
+
+@st.cache_data(ttl=60 * 60 * 8, show_spinner=False)
+def festival_stations(city: str, year: int, key: str):
+    return download_cpcb_festival(city, year, DIWALI_BY_YEAR[year], key)
 
 
 @st.cache_resource(show_spinner=False)
@@ -359,6 +365,127 @@ if nav == ROUTES[6]:
     st.markdown("**Data ethics:** Never mix modeled CAMS values and station measurements without identifying the different sources. Do not interpolate across cities to claim street-level accuracy.")
     st.stop()
 
+if nav == ROUTES[1]:
+    event_date = DIWALI_BY_YEAR[2026]
+    st.markdown("""<div class="diwali-hero"><div class="diwali-eyebrow">🪔 AIRFECTION · REAL FESTIVAL HISTORY</div>
+      <h1>Diwali Pollution <span>2026</span></h1>
+      <p>Before · During · After Diwali | 8 November 2026</p>
+      <div class="diwali-subtext">Ground-station observations are not 2026 forecasts. See both clearly labeled below.</div></div>""",unsafe_allow_html=True)
+    st.info("**Data clarity:** This page separates actual historical station measurements, historical model estimates, and published 2026 forecasts. A daily average can conceal a short Diwali-night peak. Pollution can rise or fall, depending on real conditions.")
+    st.markdown("### ① Choose evidence for the historical comparison")
+    source_mode = st.selectbox("Diwali historical data", [
+        "Measured CPCB stations (real observations)",
+        "Open-Meteo CAMS (historical regional model)",
+        "Your uploaded station CSV", "Synthetic demo (fictional)"],key="diwali_source")
+    historic_year=2024
+    archive_city=city if city in CITIES else "Delhi"
+    upcoming=pd.DataFrame()
+    festival_history=pd.DataFrame()
+    source_label=""
+    if source_mode.startswith("Measured"):
+        c1,c2=st.columns(2)
+        with c1:
+            archive_city=st.selectbox("Indian monitoring city",list(dict.fromkeys([archive_city,'Delhi','Amritsar','Ludhiana','Jalandhar','Chandigarh','Mumbai','Kolkata','Lucknow','Jaipur','Patna'])),key="festival_station_city")
+            historic_year=st.selectbox("Historical Diwali year",[2024,2025,2023],key="cpcb_year")
+        with c2:
+            st.caption("Public API demo works for **2024 only**. For 2025 or 2023, enter a free personal key. Key is used for this session and is not added to GitHub.")
+            try: saved_key=st.secrets.get('XKDR_API_KEY','')
+            except Exception: saved_key=''
+            xkdr_key=st.text_input("XKDR API key (optional for 2024)", type="password",value=saved_key,key="festival_token")
+            st.markdown("[Get a free key](https://airquality.xkdr.org/signup) · [Official API documentation](https://airquality.xkdr.org/#docs)")
+        st.caption("Source: **CPCB ground monitoring network, served by XKDR Forum**. This is an **unweighted city mean across reporting stations**, not hyperlocal AQI. API times use IST. Data are not fully quality-assured.")
+        try:
+            with st.spinner("Loading genuine PM2.5 station observations from Indian monitoring networks…"):
+                festival_history=festival_stations(archive_city,historic_year,xkdr_key)
+            source_label=f"Measured CPCB station PM2.5 · {archive_city} · Diwali {historic_year}"
+            st.success(f"Loaded {len(festival_history):,} measured station-hour aggregates. No synthetic values were added.")
+        except Exception as exc:
+            st.error(f"Couldn't retrieve the station archive: {exc}")
+            st.info("Try Delhi + 2024 (public demo access); for older/other years supply a personal XKDR API key. Alternatively choose the explicitly labeled CAMS historical model or upload real station readings. We never invent missing station values.")
+    elif source_mode.startswith("Open-Meteo"):
+        years=st.multiselect("Historical model years",[2024,2025,2023],default=[2024,2025],key="cams_hist_years")
+        frames=[]
+        for y in years:
+            try:frames.append(festival_historical(latitude,longitude,y))
+            except Exception as exc:st.warning(f"CAMS {y} unavailable: {exc}")
+        festival_history=pd.concat(frames,ignore_index=True) if frames else pd.DataFrame()
+        source_label="Open-Meteo CAMS · historical REGIONAL MODEL, not CPCB measurements"
+    elif source_mode.startswith("Your"):
+        if "user_dataset" in st.session_state:
+            festival_history=from_uploaded_history(st.session_state["user_dataset"])
+            source_label="Your uploaded station PM2.5 observations"
+        else:st.warning("Open Data Lab, upload a real station CSV, then click 'Use this dataset to train AIRFECTION'.")
+    else:
+        festival_history=synthetic_archive()
+        source_label="SYNTHETIC DEMONSTRATION — FAKE VALUES"
+        st.warning("SIMULATED data only. Do not present the numbers as real measurements.")
+    if not festival_history.empty:
+        historical_days=daily_stats(festival_history,'pm2_5',min_samples=12)
+        selected_years=sorted(historical_days.year.unique()) if not historical_days.empty else []
+        st.markdown(f"**Historical source:** {source_label}")
+        if 'station_count' in festival_history:
+            station_max=int(festival_history.station_count.max())
+            st.caption(f"Reporting monitors varied by hour; up to {station_max} station(s). No sensor interpolation or PM2.5-to-Indian-AQI conversion.")
+        st.markdown("### ② What actually happened around Diwali?")
+        if len(selected_years)==1:
+            year=int(selected_years[0]); festival_day=DIWALI_BY_YEAR[year]
+            evening=festival_evening_stats(festival_history,year,festival_day)
+            st.markdown("**Evening-focused comparison** — 18:00–23:00 on the preceding and festival evenings; 00:00–05:00 the morning after.")
+            cols=st.columns(3)
+            for col,(name,values) in zip(cols,evening.items()):
+                if values:col.metric(name,f"{values['pm2_5']:.1f} µg/m³",help=f"Average from {values['hours']} observed hours; peak {values['peak']:.1f} µg/m³.")
+                else:col.metric(name,"Not enough measurements")
+        else:
+            st.caption("Multiple historical years selected. Use the daily timeline below to compare them; the evening cards appear when one year is selected.")
+        if not historical_days.empty:
+            fig=go.Figure()
+            for y in selected_years:
+                d=historical_days[historical_days.year==y].sort_values('offset')
+                fig.add_trace(go.Scatter(x=d.offset,y=d['mean'],name=f"{y} daily measured/model mean",mode="lines+markers",line=dict(width=3)))
+            fig.update_layout(xaxis_title="Days relative to Diwali (0 = festival day)",yaxis_title="24-hour mean PM2.5 (µg/m³)")
+            st.plotly_chart(plot_style(fig,350),use_container_width=True)
+            st.caption("Daily averages can hide short-lived peaks at night. See hourly records below. Missing days are omitted rather than replaced with generated values.")
+            st.dataframe(historical_days[['year','offset','date','mean','peak','n','source']],use_container_width=True,hide_index=True)
+        st.markdown("### ③ Examine actual hourly observations")
+        chosen_offset=st.slider("Historical days from Diwali",-3,3,0,key='historical_offset')
+        shown=festival_history[festival_history['offset']==chosen_offset].copy()
+        if not shown.empty:
+            fig2=go.Figure()
+            for y in sorted(shown.year.unique()):
+                sub=shown[shown.year==y].sort_values('time')
+                fig2.add_trace(go.Scatter(x=sub.time.dt.hour,y=sub.pm2_5,name=f"{y} hourly PM2.5",mode='lines+markers'))
+            fig2.update_layout(xaxis_title="Hour (India local time)",yaxis_title="PM2.5 µg/m³")
+            st.plotly_chart(plot_style(fig2,330),use_container_width=True)
+            st.caption("Measurements are from actual past Diwali dates shown in the table, not a prediction for November 2026.")
+        st.download_button("Download historical observations CSV",festival_history.to_csv(index=False).encode('utf-8'),file_name=f"airfection_historical_{archive_city}_{historic_year}.csv",mime='text/csv')
+    else:
+        st.warning("No historical records were loaded. Change city, historical year or data source.")
+    st.markdown("### ④ Forecast for Diwali 2026 — separate from old observations")
+    st.info("2026 forecasts below come from the **external CAMS model**, never from the past-year station records. AIRFECTION's own Random Forest covers only the next 1–6 hours on Dashboard. Data outside the provider's short forecast window remains unavailable.")
+    try:
+        upcoming=festival_future(latitude,longitude)
+        source_forecast="Open-Meteo CAMS regional modeled forecast"
+    except Exception as exc:
+        upcoming=pd.DataFrame()
+        st.warning(f"Forecast provider unavailable: {exc}")
+    outlook=build_outlook(festival_history,upcoming,variable='pm2_5')
+    pick_day=st.slider("2026 date relative to Diwali",-3,3,0,key='diwali_2026_day')
+    day=event_date+timedelta(days=pick_day)
+    detail=outlook[outlook.offset==pick_day].iloc[0]
+    st.markdown(f"**{phase_name(pick_day)} — {day:%d %B %Y}**")
+    left,right=st.columns(2)
+    left.metric("2026 CAMS daily PM2.5 forecast", f"{detail['forecast']:.1f} µg/m³" if pd.notna(detail['forecast']) else "Not published")
+    right.metric("Historical daily reference (NOT forecast)",f"{detail['reference']:.1f} µg/m³" if pd.notna(detail['reference']) else "Unavailable")
+    if pd.notna(detail['forecast']):st.caption(f"Forecast based on {int(detail['forecast_hours'])} available hourly CAMS values. This does not establish Indian AQI.")
+    else:st.warning("No complete published daily CAMS forecast for this date. We do not fill it with historical values.")
+    fig3=go.Figure()
+    fig3.add_trace(go.Scatter(x=outlook['date'],y=outlook['reference'],name='Historical daily reference ONLY',line=dict(dash='dash',color='#cfb1be'),mode='lines+markers'))
+    fig3.add_trace(go.Scatter(x=outlook['date'],y=outlook['forecast'],name='Published 2026 CAMS forecast ONLY',line=dict(color='#f57286',width=4),mode='lines+markers'))
+    fig3.update_layout(xaxis_title="2026 dates",yaxis_title="PM2.5 µg/m³")
+    st.plotly_chart(plot_style(fig3,330),use_container_width=True)
+    st.caption("Sources: [XKDR India Air Quality Database / CPCB](https://airquality.xkdr.org/) · [Open-Meteo CAMS](https://open-meteo.com/en/docs/air-quality-api). Data and results are NOT official Indian AQI. Higher on Diwali is not guaranteed by any genuine dataset.")
+    st.stop()
+
 with st.spinner("Preparing forecast and evaluating the model…"):
     try:
         if is_uploaded:
@@ -386,110 +513,6 @@ with st.spinner("Preparing forecast and evaluating the model…"):
         st.error(f"Could not load or train the forecast: {exc}")
         st.info("Try Demo mode. Demo numbers are artificial and are never displayed as live observations.")
         st.stop()
-
-if nav == ROUTES[1]:
-    event_date = DIWALI_BY_YEAR[2026]
-    st.markdown(f"""<div class="diwali-hero">
-      <div class="diwali-eyebrow">🪔 AIRFECTION · THE REASON WE BUILT THIS</div>
-      <h1>Diwali Air Outlook <span>2026</span></h1>
-      <p>Before · On · After Diwali — 8 November 2026</p>
-      <div class="diwali-subtext">Compare previous festivals and inspect published forecasts as their dates enter the forecast horizon.</div>
-      </div>""", unsafe_allow_html=True)
-    st.info("**Two kinds of information appear here:** historical comparisons from earlier Diwalis, and actual published CAMS forecasts for dates within the provider's 7-day horizon. The historical reference is **not** a validated prediction for Diwali 2026. Your Random Forest predicts only the next 1–6 hours on the main dashboard.")
-    source_notes = []
-    if is_demo:
-        festival_history = synthetic_archive()
-        upcoming = pd.DataFrame(columns=festival_history.columns)
-        source_notes.append("FICTIONAL DEMO: all festival history below is generated for interface testing.")
-    elif is_uploaded:
-        festival_history = from_uploaded_history(history)
-        upcoming = pd.DataFrame(columns=festival_history.columns)
-        source_notes.append("Uploaded station history only. No 2026 live forecast is assumed from these records.")
-    else:
-        frames=[]
-        for historic_year in (2024, 2025):
-            try:
-                frames.append(festival_historical(latitude, longitude, historic_year))
-            except Exception as exc:
-                source_notes.append(f"Historical {historic_year} unavailable: {exc}")
-        festival_history = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        try:
-            upcoming = festival_future(latitude, longitude)
-        except Exception as exc:
-            upcoming = pd.DataFrame()
-            source_notes.append(f"Published future CAMS forecast unavailable: {exc}")
-    for note in source_notes:
-        st.warning(note)
-    have_us = any((not frm.empty and "us_aqi" in frm and frm["us_aqi"].notna().any()) for frm in (festival_history, upcoming))
-    measurement = st.radio("Display metric", ["PM2.5 concentration (µg/m³)", "Provider US AQI (NOT Indian CPCB AQI)"] if have_us else ["PM2.5 concentration (µg/m³)"], horizontal=True)
-    var = "us_aqi" if measurement.startswith("Provider") else "pm2_5"
-    unit = "US AQI" if var == "us_aqi" else "µg/m³"
-    outlook = build_outlook(festival_history, upcoming, variable=var)
-    label_section("Festival phases", "Before · On · After Diwali", "Each card summarizes the prior-year median daily patterns for its phase, not a future forecast.", right="HISTORICAL REFERENCE")
-    summary = phase_summary(outlook, "reference")
-    columns = st.columns(3, gap="small")
-    phases = [("Before Diwali", "5–7 Nov 2026", "−3 to −1 days"),
-              ("On Diwali", "8 Nov 2026", "Festival day"),
-              ("After Diwali", "9–11 Nov 2026", "+1 to +3 days")]
-    phase_future = phase_summary(outlook, "forecast")
-    for col, (name, date_label, extra) in zip(columns, phases):
-        with col:
-            value = summary[name]
-            value_str = f"{value:.1f} {unit}" if value is not None else "Unavailable"
-            provider = phase_future[name]
-            provider_text = (f"2026 provider forecast (available days only): {provider:.1f} {unit}"
-                             if provider is not None else "2026 provider forecast: not yet available")
-            st.markdown(f'<div class="diwali-phase"><div class="phase-kicker">{escape(extra)}</div><h3>{escape(name)}</h3><div class="phase-value">{escape(value_str)}</div><div class="phase-date">{escape(date_label)} · past-festival reference</div><div class="phase-provider">{escape(provider_text)}</div></div>', unsafe_allow_html=True)
-    label_section("Explore festival timeline", "Choose a day around Diwali", "Drag from 3 days BEFORE to 3 days AFTER the festival. Published forecasts appear only where the data provider has issued them.")
-    selected_day_offset = st.slider("Days relative to Diwali", min_value=-3, max_value=3, value=0, step=1,
-                                    format="%d days", key="festival_offset")
-    selected_date = event_date + timedelta(days=selected_day_offset)
-    st.markdown(f'**{phase_name(selected_day_offset)}** · {selected_date:%A, %d %B %Y}')
-    selected_record = outlook[outlook["offset"] == selected_day_offset].iloc[0]
-    a,b,c = st.columns([1,1,1],gap="small")
-    a.metric("Historical comparison", f"{selected_record['reference']:.1f} {unit}" if pd.notna(selected_record["reference"]) else "Unavailable")
-    b.metric("Published 2026 CAMS forecast", f"{selected_record['forecast']:.1f} {unit}" if pd.notna(selected_record["forecast"]) else "Not available")
-    c.metric("Historical years represented", int(selected_record["reference_years"]))
-    if pd.notna(selected_record["forecast"]):
-        st.success(f"**Real provider forecast available for {selected_date:%d %b}:** This daily mean is derived from {int(selected_record['forecast_hours'])} forecast hours. It comes from Open-Meteo/CAMS, not our Random Forest. It may change as new forecasts arrive.")
-    else:
-        st.warning("**No published forecast for the selected day yet.** The number under 'Historical comparison' is only a prior-year reference, not a prediction for 2026. Move closer to that date or check the model's 1–6h forecast on Dashboard.")
-    # Chart plots the two data types separately; do NOT connect missing provider days.
-    fig = go.Figure()
-    days = outlook["date"].astype(str)
-    fig.add_trace(go.Scatter(x=days, y=outlook["reference"], name="Prior-year median (reference only)",
-                             mode="lines+markers", line=dict(color="#d9b7c2", width=2.5, dash="dash"),
-                             marker=dict(size=8)))
-    if outlook["forecast"].notna().any():
-        fig.add_trace(go.Scatter(x=days, y=outlook["forecast"], name="Published CAMS 2026 forecast",
-                                 mode="lines+markers", line=dict(color="#f26b76", width=4),
-                                 marker=dict(size=10)))
-    fig.update_layout(xaxis_title="Diwali 2026 timeline", yaxis_title=f"Daily average ({unit})")
-    st.plotly_chart(plot_style(fig, 375), use_container_width=True, config={"displayModeBar":False})
-    st.caption("Dashed line = earlier-year comparison; solid line = real provider forecast, where available. Blank means no provider forecast. PM2.5 and US AQI are different variables. US AQI here is NOT official Indian AQI.")
-    label_section("Hourly detail", "What about the evening of Diwali?", "Choose an hour to compare the historical pattern with any published 2026 forecast.")
-    selected_clock = st.slider("Hour of selected day", min_value=0, max_value=23, value=20, step=1, format="%d:00", key="festival_hour")
-    historic_clock = festival_history[(festival_history["offset"] == selected_day_offset) & (festival_history["time"].dt.hour == selected_clock)] if not festival_history.empty else pd.DataFrame()
-    historic_hour_value = float(historic_clock[var].median()) if not historic_clock.empty and historic_clock[var].notna().any() else None
-    future_clock = upcoming[(upcoming["date"] == selected_date) & (upcoming["time"].dt.hour == selected_clock)] if not upcoming.empty else pd.DataFrame()
-    future_hour_value = float(future_clock.iloc[0][var]) if not future_clock.empty and pd.notna(future_clock.iloc[0][var]) else None
-    o1,o2=st.columns(2)
-    o1.metric("Past-Diwali hourly reference", f"{historic_hour_value:.1f} {unit}" if historic_hour_value is not None else "Unavailable")
-    o2.metric("2026 CAMS forecast for this hour", f"{future_hour_value:.1f} {unit}" if future_hour_value is not None else "Not yet published")
-    if not future_clock.empty and pd.notna(future_clock.iloc[0].get("pm2_5", np.nan)) and not is_demo:
-        st.caption("Hourly 2026 CAMS forecast is a regional atmospheric model output, not a local sensor reading or our Random Forest forecast.")
-    else:
-        st.caption("No hourly 2026 forecast shown here beyond provider coverage; historical hourly comparisons are not future predictions.")
-    with st.expander("Examine the original festival comparison data"):
-        if not festival_history.empty:
-            grouped=daily_stats(festival_history,var)
-            st.dataframe(grouped[["year","offset","date","mean","peak","n","source"]], hide_index=True, use_container_width=True)
-        else:
-            st.info("No historic festival data for this location. Try Live mode or load Diwali-window station measurements in Data Lab.")
-        st.download_button("Download Diwali outlook CSV",outlook.to_csv(index=False), file_name="airfection_diwali_2026_outlook.csv",mime="text/csv")
-    st.markdown("**How to obtain real Indian AQI:** India's CPCB AQI requires multiple pollutant-specific calculations, time averaging and available measurements. This version predicts PM2.5 and optionally displays provider US AQI; it does not calculate official CPCB AQI.")
-    st.caption("Sources: [Open-Meteo Air Quality / CAMS](https://open-meteo.com/en/docs/air-quality-api) · [India's 2026 Diwali holiday date](https://www.cgca.gov.in/CCAPB/list-of-holiday). Historic model records represent past regional modeled conditions, not proof of fireworks causing pollution.")
-    st.stop()
 
 st.markdown('''
 <div class="hero"><div style="position:relative;z-index:2"><div class="eyebrow">GUARDIANS OF THE GALAXY  ·  ENVIRONMENTAL INTELLIGENCE</div>
